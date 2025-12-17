@@ -1,67 +1,63 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
-import torchvision
+import torchvision.models as models
 import torchvision.transforms as transforms
-from torchvision import models
 import matplotlib.pyplot as plt
 import numpy as np
+import requests
+from io import BytesIO
+from PIL import Image
 
-# 1. 데이터셋 로드 및 전처리 (생활 사물 중심 CIFAR-100)
-# 데이터셋 용량을 고려해 교수님 시연용으로 최적화했습니다.
+# 1. 모델 설정 (VGG19 특징 추출기)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+weights = models.VGG19_Weights.DEFAULT
+model = models.vgg19(weights=weights).features.to(device).eval()
+
+# 2. 전처리 설정
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-print("데이터셋 다운로드 중... (약 1분 소요)")
-trainset = torchvision.datasets.CIFAR100(root='./data', train=True, download=True, transform=transform)
-trainloader = torch.utils.data.DataLoader(trainset, batch_size=4, shuffle=True)
+# 3. 인터넷 랜덤 이미지 소스 (차단 방지 헤더 포함)
+# 'https://picsum.photos'는 실행할 때마다 다른 이미지를 주는 무료 서비스입니다.
+headers = {'User-Agent': 'Mozilla/5.0'}
+num_samples = 4
 
-# 생활 필수품 위주의 레이블 인덱스 (CIFAR-100 전체 레이블 중 일부)
-# 교수님이 보시기에 '사물' 위주로 나오도록 설정됩니다.
-target_labels = trainset.classes
+plt.figure(figsize=(12, 16))
 
-# 2. Transfer Learning 모델 설정
-print("사전 학습된 모델 로드 중...")
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-model = models.resnet18(pretrained=True)
-# 마지막 출력층을 100개 클래스로 변경
-model.fc = nn.Linear(model.fc.in_features, 100)
-model = model.to(device)
+print("실시간 인터넷 랜덤 이미지 로딩 및 분석 중...")
 
-# 3. 테스트 및 시각화 함수 (Numpy 활용)
-def imshow(img):
-    img = img / 2 + 0.5     # 역정규화
-    npimg = img.numpy()
-    plt.figure(figsize=(10, 5))
-    plt.imshow(np.transpose(npimg, (1, 2, 0)))
-    plt.axis('off')
-    plt.show()
+for i in range(num_samples):
+    try:
+        # 매번 다른 이미지를 가져오기 위해 주소 뒤에 랜덤 파라미터 추가
+        random_url = f"https://picsum.photos/400/400?random={i}"
+        resp = requests.get(random_url, headers=headers)
+        img_original = Image.open(BytesIO(resp.content)).convert('RGB')
+        
+        # 모델 분석
+        img_t = transform(img_original).unsqueeze(0).to(device)
+        with torch.no_grad():
+            # 첫 번째 컨볼루션 레이어에서 특징 추출
+            features = model[0](img_t)
+        
+        # 시각화 (원본 vs AI 특징맵)
+        plt.subplot(num_samples, 2, 2*i + 1)
+        plt.imshow(img_original)
+        plt.title(f"Random Image {i+1}")
+        plt.axis('off')
+        
+        plt.subplot(num_samples, 2, 2*i + 2)
+        # 여러 필터 중 시각적으로 선명한 4번 필터 선택
+        plt.imshow(features[0, 4].cpu().numpy(), cmap='magma')
+        plt.title("AI Visual Feature Map")
+        plt.axis('off')
+        
+    except Exception as e:
+        print(f"{i+1}번 이미지 로딩 실패: {e}")
 
-def run_demo():
-    print("\n--- 실제 사물 인식 시뮬레이션 시작 ---")
-    model.eval()
-    dataiter = iter(trainloader)
-    images, labels = next(dataiter)
+plt.tight_layout()
+plt.show()
 
-    # 모델 예측 수행
-    with torch.no_grad():
-        outputs = model(images.to(device))
-        _, predicted = torch.max(outputs, 1)
-
-    # 결과 출력
-    imshow(torchvision.utils.make_grid(images))
-    
-    print(" [ 결과 보고서 ]")
-    for j in range(4):
-        actual = target_labels[labels[j]]
-        pred = target_labels[predicted[j]]
-        print(f"이미지 {j+1}: 실제 정답 = [{actual}]  /  모델 예측 = [{pred}]")
-    
-    print("\n* 참고: 현재 학습 전 단계라 예측이 틀릴 수 있습니다.")
-    print("* 교수님께는 '전이학습을 통해 사물의 특징을 추출하는 구조'를 강조하세요.")
-
-# 실행
-run_demo()
+print("\n✔ 실행 성공: 버튼을 다시 누르면 또 다른 사진들이 분석됩니다.")
